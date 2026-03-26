@@ -341,7 +341,8 @@ fn ring_mod_math_i16() {
 
     let (_, out_samples) = read_wav_i16(&output);
 
-    // 手計算で検証: y[n] = round(x[n] * sin(2π * freq * n / sample_rate))
+    // v2数式: y[n] = x[n] * (1-mix) + x[n] * sin(2π*f*n/fs) * mix
+    // デフォルト mix=1.0 なので y[n] = x[n] * sin(2π*f*n/fs)
     let angular_freq = 2.0 * PI * freq;
     for (n, (&x, &y)) in input_samples.iter().zip(out_samples.iter()).enumerate() {
         let mod_value = (angular_freq * n as f32 / sample_rate as f32).sin();
@@ -383,7 +384,7 @@ fn ring_mod_stereo_phase() {
 
     let (_, out_samples) = read_wav_i16(&output);
 
-    // L/R が同一であることを検証（同じ入力 + 同じ mod_value = 同じ出力）
+    // L/R が同一であることを検証
     for frame in 0..50 {
         let l = out_samples[frame * 2];
         let r = out_samples[frame * 2 + 1];
@@ -394,7 +395,7 @@ fn ring_mod_stereo_phase() {
         );
     }
 
-    // さらに数式と一致するか検証
+    // 数式と一致するか検証
     let angular_freq = 2.0 * PI * freq;
     for frame in 0..50 {
         let mod_value = (angular_freq * frame as f32 / sample_rate as f32).sin();
@@ -416,8 +417,6 @@ fn clipping_i16() {
     let input = dir.path().join("in.wav");
     let output = dir.path().join("out.wav");
 
-    // i16::MAX に近い値を入力し、sin値が1.0になるタイミングでもクリップしないことを確認
-    // また、理論上オーバーフローしないことも確認
     let input_samples: Vec<i16> = vec![i16::MAX, i16::MIN, i16::MAX, i16::MIN];
     create_wav_i16_mono(&input, 44100, &input_samples);
 
@@ -433,7 +432,6 @@ fn clipping_i16() {
 
     let (_, out_samples) = read_wav_i16(&output);
 
-    // 出力が i16 範囲内に収まっていること（クラッシュしないこと自体がテスト）
     for &s in &out_samples {
         assert!(
             (i16::MIN..=i16::MAX).contains(&s),
@@ -442,3 +440,177 @@ fn clipping_i16() {
         );
     }
 }
+
+// ===========================================================================
+// v2: 波形選択テスト
+// ===========================================================================
+
+#[test]
+fn cli_waveform_square() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("in.wav");
+    let output = dir.path().join("out.wav");
+    create_wav_i16_mono(&input, 44100, &[10000; 200]);
+
+    cmd()
+        .args([
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "-f", "100",
+            "-w", "square",
+        ])
+        .assert()
+        .success();
+
+    let (_, out_samples) = read_wav_i16(&output);
+    assert_eq!(out_samples.len(), 200);
+
+    // Square波: mod_value は +1 or -1 のみ
+    // mix=1.0 なので output = input * mod_value
+    // → 出力は +10000 か -10000 のどちらか
+    for &s in &out_samples {
+        assert!(
+            s == 10000 || s == -10000,
+            "Square波の出力が ±10000 でない: {}",
+            s
+        );
+    }
+}
+
+#[test]
+fn cli_waveform_invalid() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("in.wav");
+    let output = dir.path().join("out.wav");
+    create_wav_i16_mono(&input, 44100, &[0; 100]);
+
+    cmd()
+        .args([
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "-w", "invalid_waveform",
+        ])
+        .assert()
+        .failure();
+}
+
+// ===========================================================================
+// v2: ミックステスト
+// ===========================================================================
+
+#[test]
+fn cli_mix_half() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("in.wav");
+    let output = dir.path().join("out.wav");
+
+    let sample_rate: u32 = 44100;
+    let freq: f32 = 100.0;
+    let input_val: i16 = 20000;
+    let input_samples: Vec<i16> = vec![input_val; 10];
+    create_wav_i16_mono(&input, sample_rate, &input_samples);
+
+    cmd()
+        .args([
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "-f", &freq.to_string(),
+            "-m", "0.5",
+        ])
+        .assert()
+        .success();
+
+    let (_, out_samples) = read_wav_i16(&output);
+
+    // y[n] = x * (1-0.5) + x * mod_value * 0.5 = x * (0.5 + mod_value * 0.5)
+    let angular_freq = 2.0 * PI * freq;
+    for (n, &y) in out_samples.iter().enumerate() {
+        let mod_value = (angular_freq * n as f32 / sample_rate as f32).sin();
+        let expected = (input_val as f32 * (0.5 + mod_value * 0.5))
+            .round()
+            .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        assert_eq!(y, expected, "フレーム {} で不一致: got={}, expected={}", n, y, expected);
+    }
+}
+
+#[test]
+fn cli_mix_zero_passthrough() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("in.wav");
+    let output = dir.path().join("out.wav");
+
+    let input_samples: Vec<i16> = vec![1000, -2000, 3000, -4000, 5000];
+    create_wav_i16_mono(&input, 44100, &input_samples);
+
+    cmd()
+        .args([
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "-m", "0",
+        ])
+        .assert()
+        .success();
+
+    let (_, out_samples) = read_wav_i16(&output);
+
+    // mix=0 → 原音そのまま
+    assert_eq!(out_samples, input_samples);
+}
+
+#[test]
+fn cli_mix_out_of_range() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("in.wav");
+    let output = dir.path().join("out.wav");
+    create_wav_i16_mono(&input, 44100, &[0; 100]);
+
+    // mix > 1.0
+    cmd()
+        .args([
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "-m", "1.5",
+        ])
+        .assert()
+        .failure();
+
+    // mix < 0.0
+    cmd()
+        .args([
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "-m", "-0.1",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn cli_default_waveform_and_mix() {
+    // デフォルト (waveform=sine, mix=1.0) でフェーズ1と同じ結果になること
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("in.wav");
+    let output = dir.path().join("out.wav");
+
+    let sample_rate: u32 = 44100;
+    let freq: f32 = 50.0;
+    let input_samples: Vec<i16> = vec![10000, 20000, 30000];
+    create_wav_i16_mono(&input, sample_rate, &input_samples);
+
+    // -w も -m も指定しない
+    cmd()
+        .args([input.to_str().unwrap(), output.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let (_, out_samples) = read_wav_i16(&output);
+
+    // フェーズ1と同じ数式: y[n] = round(x[n] * sin(2π*f*n/fs))
+    let angular_freq = 2.0 * PI * freq;
+    for (n, (&x, &y)) in input_samples.iter().zip(out_samples.iter()).enumerate() {
+        let mod_value = (angular_freq * n as f32 / sample_rate as f32).sin();
+        let expected = (x as f32 * mod_value).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        assert_eq!(y, expected, "フレーム {} でフェーズ1後方互換が不一致", n);
+    }
+}
+
