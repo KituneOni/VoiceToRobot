@@ -27,13 +27,13 @@ cargo build --release
 
 ```sh
 # 基本（デフォルト: サイン波 50Hz, ミックス 1.0）
-voice-to-robot input.wav output.wav
+cargo run -- input.wav output.wav
 
 # パラメータ指定
-voice-to-robot input.wav output.wav -f 100 -w square -m 0.5
+cargo run -- input.wav output.wav -f 100 -w square -m 0.5
 
 # 出力先が既存の場合は -y で上書き
-voice-to-robot input.wav output.wav -y
+cargo run -- input.wav output.wav -y
 ```
 
 #### CLI引数
@@ -52,7 +52,7 @@ voice-to-robot input.wav output.wav -y
 引数なしで起動するとGUIが表示される
 
 ```sh
-voice-to-robot
+cargo run
 ```
 
 1. 「ファイルを開く」でWAVファイルを選択
