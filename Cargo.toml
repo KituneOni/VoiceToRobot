@@ -1,0 +1,9 @@
+[package]
+name = "voice-to-robot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hound = "3.5"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
