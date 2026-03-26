@@ -330,9 +330,7 @@ impl eframe::App for VoiceToRobotApp {
                 .map(|p| p.is_playing.load(std::sync::atomic::Ordering::SeqCst))
                 .unwrap_or(false);
 
-            ui.horizontal(|ui| {
-                ui.set_enabled(has_file);
-
+            ui.add_enabled_ui(has_file, |ui| {
                 if is_playing {
                     if ui.button("⏹ 停止").clicked() {
                         self.stop_playback();
@@ -387,7 +385,46 @@ pub fn run_gui() -> anyhow::Result<()> {
     eframe::run_native(
         "Voice to Robot",
         options,
-        Box::new(|_cc| Ok(Box::new(VoiceToRobotApp::default()))),
+        Box::new(|cc| {
+            // 日本語フォントを読み込む
+            configure_fonts(&cc.egui_ctx);
+            Ok(Box::new(VoiceToRobotApp::default()))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("GUIの起動に失敗しました: {}", e))
+}
+
+/// 日本語対応フォントを egui に登録する
+fn configure_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    // Windows システムフォントを優先順に試行
+    let font_paths = [
+        r"C:\Windows\Fonts\YuGothR.ttc",  // Yu Gothic Regular
+        r"C:\Windows\Fonts\meiryo.ttc",    // Meiryo
+        r"C:\Windows\Fonts\msgothic.ttc",  // MS Gothic
+    ];
+
+    for path in &font_paths {
+        if let Ok(font_data) = std::fs::read(path) {
+            fonts.font_data.insert(
+                "jp_font".to_owned(),
+                egui::FontData::from_owned(font_data).into(),
+            );
+
+            // Proportional フォントファミリーに追加（デフォルトフォントの後に挿入）
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                family.push("jp_font".to_owned());
+            }
+
+            // Monospace にも追加（エラーメッセージ等で使用）
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                family.push("jp_font".to_owned());
+            }
+
+            break; // 最初に見つかったフォントを使用
+        }
+    }
+
+    ctx.set_fonts(fonts);
 }
